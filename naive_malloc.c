@@ -46,7 +46,7 @@ void *naive_malloc(size_t size)
 								   : (required_size / page_size_u) + 1;
 	header_p				 = sbrk(required_pages * page_size_u);
 	size_t *aligned_header_p = (size_t *)header;
-	*aligned_header_p		 = size;
+	*aligned_header_p		 = header_size + p_padding + size;
 	void *payload = (char *)(aligned_header_p) + header_size + p_padding;
 
 	return (payload);
