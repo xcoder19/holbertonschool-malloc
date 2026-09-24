@@ -1,53 +1,143 @@
 #include "malloc.h"
-#include <stdalign.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+/* sysconf sbrk */
+#include <unistd.h>
+/* fprintf perror */
+#include <stdio.h>
+
+#define ALIGN sizeof(void *)
+
 /**
- * naive_malloc - Allocates memory.
- * @size: Number of bytes.
+ * addPageToHeap - adds one page of memory to heap
  *
- * Return: Pointer to memory, or NULL.
+ * Return: pointer to previous program break; or NULL on failure
+ */
+void *addPageToHeap(void)
+{
+	long int page_sz;
+	void	*ptr;
+
+	page_sz = sysconf(_SC_PAGESIZE);
+	if (page_sz == -1)
+	{
+		fprintf(stderr, "addPageToHeap: sysconf failure\n");
+		return (NULL);
+	}
+
+	ptr = sbrk((intptr_t)page_sz);
+	if (ptr == (void *)-1)
+	{
+		perror("addPageToHeap: sbrk");
+		return (NULL);
+	}
+
+	return (ptr);
+}
+
+/**
+ * findUnusedBlock - finds first unused block in naive malloc
+ *   implemententation
+ *
+ * @blk_0_addr: pointer to first block / original program break
+ * @size: pointer to amount of bytes user requested; modified by reference to
+ *   ensure resulting block will be aligned
+ * @used_blk_ct: amount of allocated blocks in naive malloc implementation
+ * @unused_blk_addr: address in heap of unused region of heap; modifed by
+ *   reference upon finding unused block of suitable size
+ * @unused_blk_sz: size in bytes of unsued region of heap; modifed by
+ *   reference upon finding unused block of suitable size
+ * Return: 0 on success, 1 on failure
+ */
+int findUnusedBlock(void *blk_0_addr, size_t *size, size_t used_blk_ct,
+					void **unused_blk_addr, size_t *unused_blk_sz)
+{
+	void	*blk_addr;
+	long int page_sz;
+	size_t	 i, blk_sz;
+
+	if (blk_0_addr == NULL || size == NULL || unused_blk_addr == NULL ||
+		unused_blk_sz == NULL)
+		return (1);
+
+	page_sz = sysconf(_SC_PAGESIZE);
+	if (page_sz == -1)
+	{
+		fprintf(stderr, "findUnusedBlock: sysconf failure\n");
+		return (1);
+	}
+
+	/* find next unused block */
+	for (blk_addr = blk_0_addr, i = 0; i < used_blk_ct; i++)
+	{
+		blk_sz	 = *((size_t *)blk_addr);
+		blk_addr = (unsigned char *)blk_addr + blk_sz;
+	}
+
+	*unused_blk_addr = blk_addr;
+	*unused_blk_sz =
+		used_blk_ct ? *((size_t *)*unused_blk_addr) : (size_t)page_sz;
+
+	/* presumes alignment of starting progam break and previous blocks */
+	*size += (ALIGN - (*size % ALIGN));
+
+	/* extend unused region if too small for new block + unused header */
+	while (*unused_blk_sz < (sizeof(size_t) * 2) + *size)
+	{
+		if (addPageToHeap() == NULL)
+			return (1);
+		*unused_blk_sz += page_sz;
+		*((size_t *)*unused_blk_addr) = *unused_blk_sz;
+	}
+
+	return (0);
+}
+
+/**
+ * naive_malloc - naive implementation of memory allocation in heap, new
+ *   blocks are allocated by pushing program break forward and no list of free
+ *   blocks is maintained for reuse
+ *
+ * @size: size of memory requested by user, in bytes
+ * Return: pointer to first byte in a contiguous region of `size`
+ *   bytes in the heap; aligned for any kind of variable
  */
 void *naive_malloc(size_t size)
 {
-	if (size == 0)
+	static void	 *blk_0_addr;
+	static size_t used_blk_ct;
+	void		 *brk_pt, *payload_addr, *new_blk_addr, *unused_blk_addr;
+	size_t		  new_blk_sz, unused_blk_sz;
+
+	/* init starting address on first call */
+	if (!blk_0_addr)
+	{
+		blk_0_addr = addPageToHeap();
+		if (blk_0_addr == NULL)
+			return (NULL);
+	}
+
+	brk_pt = sbrk(0);
+	if (brk_pt == (void *)-1)
+	{
+		perror("naive_malloc: sbrk");
 		return (NULL);
-	size_t max_alignment = alignof(max_align_t);
-	size_t h_alignment	 = alignof(size_t);
-	long   page_size	 = sysconf(_SC_PAGESIZE);
-	size_t page_size_u;
+	}
 
-	if (page_size <= 0)
+	if (findUnusedBlock(blk_0_addr, &size, used_blk_ct, &unused_blk_addr,
+						&unused_blk_sz) == 1)
 		return (NULL);
-	page_size_u			  = (size_t)page_size;
-	size_t	  header_size = sizeof(size_t);
-	size_t	  required_size, h_padding, p_padding, required_pages;
-	size_t	 *header_p	= sbrk(0);
-	uintptr_t candidate = 0;
-	uintptr_t header	= 0;
 
-	if (size > SIZE_MAX - header_size)
-		return (NULL);
-	header = (uintptr_t)header_p;
-	h_padding =
-		header % h_alignment == 0 ? 0 : h_alignment - (header % h_alignment);
-	header		  = (uintptr_t)((char *)header_p + h_padding);
-	candidate	  = (uintptr_t)(header + header_size);
-	p_padding	  = candidate % max_alignment == 0
-						? 0
-						: (max_alignment - (candidate % max_alignment));
-	required_size = header_size + size + h_padding + p_padding;
+	/* set new block for use at previous start of unused block */
+	new_blk_addr			  = unused_blk_addr;
+	new_blk_sz				  = sizeof(size_t) + size;
+	*((size_t *)new_blk_addr) = new_blk_sz;
+	used_blk_ct++;
 
-	if (required_size < page_size_u)
-		required_pages = 1;
-	required_pages			 = (required_size % page_size_u) == 0
-								   ? required_size / page_size_u
-								   : (required_size / page_size_u) + 1;
-	header_p				 = sbrk(required_pages * page_size_u);
-	size_t *aligned_header_p = (size_t *)header;
-	*aligned_header_p		 = header_size + p_padding + size;
-	void *payload = (char *)(aligned_header_p) + header_size + p_padding;
+	/* set new start of unused block after new block */
+	unused_blk_sz -= new_blk_sz;
+	unused_blk_addr = (unsigned char *)unused_blk_addr + new_blk_sz;
+	*((size_t *)unused_blk_addr) = unused_blk_sz;
 
-	return (payload);
+	payload_addr = (unsigned char *)new_blk_addr + sizeof(size_t);
+	return (payload_addr);
 }
+
