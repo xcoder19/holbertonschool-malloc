@@ -4,7 +4,10 @@
 /* fprintf perror */
 #include <stdio.h>
 
-#define ALIGN sizeof(void *)
+/* alignof(max_align_t) on x86_64; payloads must be aligned for any type */
+#define ALIGN 16
+/* size_t header, padded to ALIGN so payload stays aligned */
+#define HDR ALIGN
 
 /**
  * addPageToHeap - adds one page of memory to heap
@@ -77,10 +80,10 @@ int findUnusedBlock(void *blk_0_addr, size_t *size, size_t used_blk_ct,
 		used_blk_ct ? *((size_t *)*unused_blk_addr) : (size_t)page_sz;
 
 	/* presumes alignment of starting progam break and previous blocks */
-	*size += (ALIGN - (*size % ALIGN));
+	*size = (*size + ALIGN - 1) & ~(size_t)(ALIGN - 1);
 
 	/* extend unused region if too small for new block + unused header */
-	while (*unused_blk_sz < (sizeof(size_t) * 2) + *size)
+	while (*unused_blk_sz < HDR + *size + sizeof(size_t))
 	{
 		if (addPageToHeap() == NULL)
 			return (1);
@@ -128,7 +131,7 @@ void *naive_malloc(size_t size)
 
 	/* set new block for use at previous start of unused block */
 	new_blk_addr			  = unused_blk_addr;
-	new_blk_sz				  = sizeof(size_t) + size;
+	new_blk_sz				  = HDR + size;
 	*((size_t *)new_blk_addr) = new_blk_sz;
 	used_blk_ct++;
 
@@ -137,7 +140,7 @@ void *naive_malloc(size_t size)
 	unused_blk_addr = (unsigned char *)unused_blk_addr + new_blk_sz;
 	*((size_t *)unused_blk_addr) = unused_blk_sz;
 
-	payload_addr = (unsigned char *)new_blk_addr + sizeof(size_t);
+	payload_addr = (unsigned char *)new_blk_addr + HDR;
 	return (payload_addr);
 }
 
